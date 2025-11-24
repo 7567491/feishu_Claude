@@ -2,10 +2,6 @@
 
 基于 [gaccode.com](https://gaccode.com) 的 Claude Code Web 界面，提供桌面和移动端的完整访问体验。
 
-## 🌐 访问地址
-
-**生产环境：** https://ccui.linapp.fun
-
 ## ✨ 核心功能
 
 - **📱 响应式设计** - 完美支持桌面、平板和移动设备
@@ -47,9 +43,18 @@ pm2 start npm --name "claude-code-ui" -- run server
 pm2 start npm --name "feishu" -- run feishu
 pm2 save
 
-# Nginx 配置 (WebSocket)
-# /etc/nginx/sites-enabled/ccui.linapp.fun
-location / { proxy_pass http://127.0.0.1:63080; }  # Web UI
+# Nginx 配置示例 (WebSocket 支持)
+server {
+    server_name your-domain.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:63080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+    }
+}
 ```
 
 ## 📋 环境变量
