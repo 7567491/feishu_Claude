@@ -351,11 +351,152 @@ const githubTokensDb = {
   }
 };
 
+// Feishu database operations
+const feishuDb = {
+  // Get session by conversation ID
+  getSession: (conversationId) => {
+    try {
+      const row = db.prepare('SELECT * FROM feishu_sessions WHERE conversation_id = ? AND is_active = 1').get(conversationId);
+      return row;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Create a new Feishu session
+  createSession: (conversationId, feishuId, sessionType, projectPath, userId, claudeSessionId = null) => {
+    try {
+      const stmt = db.prepare(`
+        INSERT INTO feishu_sessions
+        (conversation_id, feishu_id, session_type, project_path, claude_session_id, user_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      const result = stmt.run(conversationId, feishuId, sessionType, projectPath, claudeSessionId, userId);
+      return {
+        id: result.lastInsertRowid,
+        conversation_id: conversationId,
+        feishu_id: feishuId,
+        session_type: sessionType,
+        project_path: projectPath,  // 使用数据库字段名
+        claude_session_id: claudeSessionId,
+        user_id: userId
+      };
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Update session activity timestamp
+  updateSessionActivity: (sessionId) => {
+    try {
+      db.prepare('UPDATE feishu_sessions SET last_activity = CURRENT_TIMESTAMP WHERE id = ?').run(sessionId);
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Update Claude session ID
+  updateClaudeSessionId: (sessionId, claudeSessionId) => {
+    try {
+      db.prepare('UPDATE feishu_sessions SET claude_session_id = ? WHERE id = ?').run(claudeSessionId, sessionId);
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Get all active sessions
+  getAllSessions: (userId = null) => {
+    try {
+      let query = 'SELECT * FROM feishu_sessions WHERE is_active = 1';
+      const params = [];
+
+      if (userId) {
+        query += ' AND user_id = ?';
+        params.push(userId);
+      }
+
+      query += ' ORDER BY last_activity DESC';
+
+      const rows = db.prepare(query).all(...params);
+      return rows;
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Log a message
+  logMessage: (sessionId, direction, messageType, content, messageId = null) => {
+    try {
+      const stmt = db.prepare(`
+        INSERT INTO feishu_message_log
+        (session_id, message_id, direction, message_type, content)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      const result = stmt.run(sessionId, messageId, direction, messageType, content);
+      return { id: result.lastInsertRowid };
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Get message history for a session
+  getMessageHistory: (sessionId, limit = 100) => {
+    try {
+      const rows = db.prepare(`
+        SELECT * FROM feishu_message_log
+        WHERE session_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `).all(sessionId, limit);
+      return rows.reverse(); // Return in chronological order
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Deactivate a session
+  deactivateSession: (sessionId) => {
+    try {
+      db.prepare('UPDATE feishu_sessions SET is_active = 0 WHERE id = ?').run(sessionId);
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Get session statistics
+  getStats: (userId = null) => {
+    try {
+      let query = `
+        SELECT
+          COUNT(*) as total_sessions,
+          SUM(CASE WHEN session_type = 'private' THEN 1 ELSE 0 END) as private_sessions,
+          SUM(CASE WHEN session_type = 'group' THEN 1 ELSE 0 END) as group_sessions,
+          (SELECT COUNT(*) FROM feishu_message_log WHERE session_id IN
+            (SELECT id FROM feishu_sessions WHERE is_active = 1${userId ? ' AND user_id = ?' : ''})) as total_messages
+        FROM feishu_sessions
+        WHERE is_active = 1
+      `;
+
+      const params = [];
+      if (userId) {
+        query += ' AND user_id = ?';
+        params.push(userId, userId);
+      }
+
+      const row = db.prepare(query).get(...params);
+      return row;
+    } catch (err) {
+      throw err;
+    }
+  }
+};
+
 export {
   db,
   initializeDatabase,
   userDb,
   apiKeysDb,
   credentialsDb,
-  githubTokensDb // Backward compatibility
+  githubTokensDb, // Backward compatibility
+  feishuDb
 };

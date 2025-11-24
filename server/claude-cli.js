@@ -97,6 +97,16 @@ async function queryClaude(command, options = {}, ws) {
 
     // Prepare environment variables
     const spawnEnv = { ...process.env };
+
+    // Set TMPDIR to dedicated log directory for claude temp files (including cwd files)
+    const claudeLogDir = path.join(os.homedir(), '.claude-logs');
+    try {
+      await fs.mkdir(claudeLogDir, { recursive: true });
+      spawnEnv.TMPDIR = claudeLogDir;
+    } catch (error) {
+      console.log('⚠️  Failed to create claude log directory:', error);
+    }
+
     if (gaccodeToken) {
       spawnEnv.CLAUDECODE_TOKEN = gaccodeToken;
       console.log('🔐 Loaded gaccode authentication token');
@@ -229,6 +239,21 @@ async function queryClaude(command, options = {}, ws) {
       // Clean up process reference
       const finalSessionId = capturedSessionId || sessionId || processKey;
       activeClaudeProcesses.delete(finalSessionId);
+
+      // Clean up temporary cwd files in log directory
+      try {
+        const claudeLogDir = path.join(os.homedir(), '.claude-logs');
+        const files = await fs.readdir(claudeLogDir);
+        const cwdFiles = files.filter(f => f.startsWith('claude-') && f.endsWith('-cwd'));
+        for (const file of cwdFiles) {
+          await fs.unlink(path.join(claudeLogDir, file)).catch(() => {});
+        }
+        if (cwdFiles.length > 0) {
+          console.log(`🧹 Cleaned up ${cwdFiles.length} temporary cwd file(s)`);
+        }
+      } catch (error) {
+        // Ignore cleanup errors
+      }
 
       ws.send(JSON.stringify({
         type: 'claude-complete',

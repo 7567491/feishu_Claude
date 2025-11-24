@@ -28,7 +28,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "npm run build && npm run server",
-    "release": "./release.sh"
+    "release": "./release.sh",
+    "feishu": "node server/feishu-ws.js"
   },
   "keywords": [
     "claude coode",
@@ -49,6 +50,7 @@
     "@codemirror/lang-python": "^6.2.1",
     "@codemirror/merge": "^6.11.1",
     "@codemirror/theme-one-dark": "^6.1.2",
+    "@larksuiteoapi/node-sdk": "^1.55.0",
     "@octokit/rest": "^22.0.0",
     "@replit/codemirror-minimap": "^0.5.2",
     "@tailwindcss/typography": "^0.5.16",

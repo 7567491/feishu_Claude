@@ -50,3 +50,38 @@ CREATE TABLE IF NOT EXISTS user_credentials (
 CREATE INDEX IF NOT EXISTS idx_user_credentials_user_id ON user_credentials(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_credentials_type ON user_credentials(credential_type);
 CREATE INDEX IF NOT EXISTS idx_user_credentials_active ON user_credentials(is_active);
+
+-- Feishu sessions table for tracking Feishu bot conversations
+CREATE TABLE IF NOT EXISTS feishu_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT UNIQUE NOT NULL, -- user-{open_id} or group-{chat_id}
+    feishu_id TEXT NOT NULL, -- open_id or chat_id
+    session_type TEXT NOT NULL, -- 'private' or 'group'
+    project_path TEXT NOT NULL, -- ./feicc/user-xxx/ or ./feicc/group-xxx/
+    claude_session_id TEXT, -- Claude CLI session ID
+    user_id INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT 1,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_feishu_sessions_conversation_id ON feishu_sessions(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_feishu_sessions_feishu_id ON feishu_sessions(feishu_id);
+CREATE INDEX IF NOT EXISTS idx_feishu_sessions_user_id ON feishu_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_feishu_sessions_active ON feishu_sessions(is_active);
+
+-- Feishu message log table for tracking all messages
+CREATE TABLE IF NOT EXISTS feishu_message_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    message_id TEXT, -- Feishu message ID
+    direction TEXT NOT NULL, -- 'incoming' or 'outgoing'
+    message_type TEXT NOT NULL, -- 'text', 'image', etc.
+    content TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES feishu_sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_feishu_message_log_session_id ON feishu_message_log(session_id);
+CREATE INDEX IF NOT EXISTS idx_feishu_message_log_created_at ON feishu_message_log(created_at);

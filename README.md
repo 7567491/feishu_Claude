@@ -14,19 +14,23 @@
 - **📁 文件管理** - 交互式文件树，支持语法高亮和实时编辑
 - **🔄 Git 集成** - 查看、暂存、提交更改，切换分支
 - **🎯 会话管理** - 恢复对话，管理多个会话，追踪历史
+- **🤖 飞书集成** - Webhook 模式接入飞书机器人，支持私聊和群聊
 
 ## 🏗️ 技术架构
 
 **后端:**
-- Node.js + Express (端口: 63080)
-- WebSocket 实时通信
+- Node.js + Express (主服务: 33300, Web UI: 63080)
+- WebSocket 实时通信 + Feishu Webhook
 - 本地 Claude CLI 集成 (gaccode 版本 2.0.37)
+- SQLite 数据库（会话管理）
 - PM2 进程管理
 
 **前端:**
-- React 18 + Vite
-- CodeMirror 代码编辑器
-- Tailwind CSS
+- React 18 + Vite + CodeMirror + Tailwind CSS
+
+**集成:**
+- Feishu Webhook (@larksuiteoapi/node-sdk v1.55.0)
+- 每个用户/群组独立会话目录和 Git 仓库
 
 **部署:**
 - Nginx 反向代理 + SSL (Let's Encrypt)
@@ -113,17 +117,20 @@ server {
 ## 📋 环境变量
 
 ```bash
-# 服务端口
-PORT=63080
+# 主服务端口（Feishu Webhook）
+PORT=33300
 
-# Claude Code CLI 路径（可选）
+# Claude Code CLI 路径
 CLAUDE_CLI_PATH=claude
 
-# 上下文窗口大小
-CONTEXT_WINDOW=160000
-
-# gaccode 代理地址（自动继承）
+# gaccode 代理地址
 ANTHROPIC_BASE_URL=https://gaccode.com/claudecode
+
+# 飞书配置
+FeishuCC_App_ID=cli_xxx
+FeishuCC_App_Secret=xxx
+FeishuCC_Verification_Token=xxx
+FeishuCC_Encrypt_Key=xxx
 ```
 
 ## 🔐 认证说明
@@ -134,17 +141,46 @@ ANTHROPIC_BASE_URL=https://gaccode.com/claudecode
 2. 已完成 gaccode 认证登录
 3. `~/.claudecode/config` 包含有效 token
 
+## 🤖 飞书集成
+
+**功能特性：**
+- Webhook 模式接收飞书消息（稳定、可扩展）
+- 私聊和群聊支持，独立会话管理
+- 自动创建项目目录和 Git 仓库
+- 持久化会话历史，支持多轮对话
+
+**配置要求：**
+```bash
+# .env 环境变量
+FeishuCC_App_ID=your_app_id
+FeishuCC_App_Secret=your_app_secret
+FeishuCC_Verification_Token=your_verification_token
+FeishuCC_Encrypt_Key=your_encrypt_key
+PORT=33300
+```
+
+**Webhook 地址：** `https://ccode.linapp.fun/webhook`
+
+**会话目录：** `./feicc/user-{open_id}/` 或 `./feicc/group-{chat_id}/`
+
 ## 📂 项目结构
 
 ```
 .
-├── server/           # Express 后端
-│   ├── claude-cli.js # Claude CLI 封装
-│   ├── index.js      # 主服务器
-│   └── routes/       # API 路由
-├── src/              # React 前端源码
-├── dist/             # 构建产物
-└── .env              # 环境配置
+├── server/
+│   ├── index.js              # 主服务器（Web UI + Feishu Webhook）
+│   ├── claude-cli.js         # Claude CLI 封装
+│   ├── feishu-webhook.js     # 飞书 Webhook 处理
+│   ├── lib/
+│   │   ├── feishu-session.js # 会话管理
+│   │   └── feishu-message-writer.js # 消息写入
+│   ├── database/
+│   │   ├── db.js             # 数据库操作
+│   │   └── init.sql          # 数据库架构
+│   └── routes/               # API 路由
+├── src/                      # React 前端源码
+├── feicc/                    # 飞书会话目录
+└── .env                      # 环境配置
 ```
 
 ## 🛠️ 故障排查

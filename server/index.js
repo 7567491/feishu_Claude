@@ -72,8 +72,10 @@ import agentRoutes from './routes/agent.js';
 import projectsRoutes from './routes/projects.js';
 import cliAuthRoutes from './routes/cli-auth.js';
 import userRoutes from './routes/user.js';
+import feishuRoutes from './routes/feishu.js';
 import { initializeDatabase } from './database/db.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
+import { initializeFeishuWebhook, createWebhookHandler } from './feishu-webhook.js';
 
 // File system watcher for projects folder
 let projectsWatcher = null;
@@ -257,6 +259,12 @@ app.use('/api/cli', authenticateToken, cliAuthRoutes);
 
 // User API Routes (protected)
 app.use('/api/user', authenticateToken, userRoutes);
+
+// Feishu API Routes (protected)
+app.use('/api/feishu', authenticateToken, feishuRoutes);
+
+// Feishu Webhook (public - no authentication, verified by Feishu signature)
+app.post('/webhook', createWebhookHandler());
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
@@ -1532,6 +1540,14 @@ async function startServer() {
     try {
         // Initialize authentication database
         await initializeDatabase();
+
+        // Initialize Feishu Webhook handler
+        try {
+            await initializeFeishuWebhook();
+            console.log(`${c.info('[INFO]')} Feishu Webhook initialized`);
+        } catch (error) {
+            console.log(`${c.warn('[WARN]')} Feishu Webhook not initialized: ${error.message}`);
+        }
 
         // Check if running in production mode (dist folder exists)
         const distIndexPath = path.join(__dirname, '../dist/index.html');
