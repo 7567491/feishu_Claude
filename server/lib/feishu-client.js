@@ -495,35 +495,59 @@ export class FeishuClient {
 
       console.log('[FeishuClient] Converted to', blocks.length, 'blocks');
 
-      // Get document body block ID (first need to get document info)
-      const docRes = await this.client.docx.document.get({
-        path: { document_id: documentId }
+      // Get document blocks to find the page block (root block)
+      const blocksRes = await this.client.docx.documentBlock.list({
+        path: { document_id: documentId },
+        params: { document_revision_id: -1, page_size: 500 }
       });
 
-      if (docRes.code !== 0) {
-        throw new Error(`Failed to get document: ${docRes.code} - ${docRes.msg}`);
+      if (blocksRes.code !== 0) {
+        throw new Error(`Failed to get document blocks: ${blocksRes.code} - ${blocksRes.msg}`);
       }
 
-      const bodyBlockId = docRes.data.document.block_id;
+      // The first block with parent_id='' is the page block (root)
+      const pageBlock = blocksRes.data.items.find(item => item.parent_id === '');
+      if (!pageBlock) {
+        throw new Error('Failed to find page block in document');
+      }
+
+      const bodyBlockId = pageBlock.block_id;
       console.log('[FeishuClient] Document body block ID:', bodyBlockId);
 
-      // Add blocks as children of body block
-      const res = await this.client.docx.documentBlockChildren.create({
-        path: {
-          document_id: documentId,
-          block_id: bodyBlockId
-        },
-        data: {
-          children: blocks,
-          index: 0
-        }
-      });
+      // Add blocks in batches to avoid API limits
+      const batchSize = 50;  // Feishu might have limits on batch size
+      let addedCount = 0;
 
-      if (res.code === 0) {
-        console.log('[FeishuClient] Content added successfully');
-      } else {
-        throw new Error(`Failed to add content: ${res.code} - ${res.msg}`);
+      for (let i = 0; i < blocks.length; i += batchSize) {
+        const batch = blocks.slice(i, Math.min(i + batchSize, blocks.length));
+
+        console.log(`[FeishuClient] Adding batch ${Math.floor(i/batchSize) + 1}: ${batch.length} blocks...`);
+
+        const res = await this.client.docx.documentBlockChildren.create({
+          path: {
+            document_id: documentId,
+            block_id: bodyBlockId
+          },
+          data: {
+            children: batch,
+            index: -1  // -1 means append at end
+          }
+        });
+
+        if (res.code === 0) {
+          addedCount += batch.length;
+          console.log(`[FeishuClient] Batch successful. Total added: ${addedCount}/${blocks.length}`);
+        } else {
+          throw new Error(`Failed to add content batch: ${res.code} - ${res.msg}`);
+        }
+
+        // Small delay between batches to avoid rate limiting
+        if (i + batchSize < blocks.length) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
       }
+
+      console.log('[FeishuClient] All content added successfully');
 
     } catch (error) {
       console.error('[FeishuClient] Failed to add markdown content:', error.message);
@@ -721,21 +745,50 @@ export class FeishuClient {
   }
 
   /**
-   * Create a document from markdown content (complete flow)
+   * Create a document from markdown content (complete flow with optional permission)
    * @param {string} title - Document title
    * @param {string} markdownContent - Markdown content
-   * @param {string} folderToken - Parent folder token (optional)
+   * @param {Object|string} optionsOrFolderToken - Options object or folderToken (backward compatible)
    * @returns {Promise<{document_id: string, url: string, title: string}>}
    */
-  async createDocumentFromMarkdown(title, markdownContent, folderToken = null) {
+  async createDocumentFromMarkdown(title, markdownContent, optionsOrFolderToken = null) {
     try {
+      // 兼容处理：如果传入的是字符串，视为folderToken（旧API）
+      let options = {};
+      if (typeof optionsOrFolderToken === 'string') {
+        options.folderToken = optionsOrFolderToken;
+        options.setPermission = false; // 保持向后兼容
+      } else if (optionsOrFolderToken && typeof optionsOrFolderToken === 'object') {
+        options = optionsOrFolderToken;
+      }
+
+      const {
+        folderToken = null,
+        setPermission = true,  // 默认设置权限！
+        permissionType = 'public',
+        linkShareEntity = 'anyone_can_view'
+      } = options;
+
       console.log('[FeishuClient] Creating document from markdown:', title);
+      console.log('[FeishuClient] Set permission:', setPermission);
 
       // Step 1: Create document
       const doc = await this.createDocument(title, folderToken);
 
       // Step 2: Add markdown content
       await this.addMarkdownContent(doc.document_id, markdownContent);
+
+      // Step 3: Set permission (默认开启)
+      if (setPermission && permissionType === 'public') {
+        try {
+          await this.setDocumentPublic(doc.document_id, { linkShareEntity });
+          console.log('[FeishuClient] Document permission set to public');
+        } catch (permError) {
+          console.error('[FeishuClient] Warning: Failed to set permission:', permError.message);
+          console.error('[FeishuClient] Document created but may not be publicly accessible');
+          // 不抛出错误，让文档创建成功
+        }
+      }
 
       console.log('[FeishuClient] Document created from markdown successfully');
 

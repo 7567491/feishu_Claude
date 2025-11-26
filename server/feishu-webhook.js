@@ -109,6 +109,12 @@ async function handleMessageEvent(data) {
     }
 
     let userText = parsedContent.text || parsedContent.content || '';
+
+    // Ensure userText is a string (防止 TypeError: userText.replace is not a function)
+    if (typeof userText !== 'string') {
+      userText = String(userText || '');
+    }
+
     // Remove @mentions
     userText = userText.replace(/@[^\s]+\s*/g, '').trim();
 

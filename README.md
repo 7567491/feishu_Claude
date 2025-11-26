@@ -82,6 +82,18 @@ pm2 start npm --name "feishu" -- run feishu
 pm2 logs feishu  # 查看日志
 ```
 
+**查看子进程状态：**
+```bash
+# 快速查看（推荐）
+node server/show-processes.js --simple
+
+# 详细信息
+node server/show-processes.js
+
+# JSON格式
+node server/show-processes.js --json
+```
+
 ## 📂 项目结构
 
 ```
@@ -132,6 +144,70 @@ pm2 restart claude-code-ui            # 重启服务
 pm2 status                            # 检查状态
 ```
 
+## 📄 文档自动创建功能 ⭐ 新增
+
+### 功能特性
+
+当 `/home/ccp` 目录下的 `.md` 文件被创建或修改时，系统会：
+1. 自动读取Markdown内容
+2. 创建飞书云文档
+3. 转换Markdown格式为飞书Blocks
+4. **自动设置公开访问权限**
+5. 将文档链接发送到当前飞书对话
+
+### 支持的Markdown格式
+
+- ✅ 标题（H1-H3）
+- ✅ 无序列表和有序列表
+- ✅ 代码块（支持语言高亮）
+- ✅ **粗体**、*斜体*、`行内代码`
+- ⏳ 表格（计划中）
+- ⏳ 图片（计划中）
+
+### 使用示例
+
+```bash
+# 1. 启动飞书服务
+npm run feishu
+
+# 2. 在飞书中给bot发消息建立对话
+"hi"
+
+# 3. 创建或修改md文件
+echo "# 我的文档\n\n这是内容" > test.md
+
+# 4. 飞书自动收到：
+# 📄 文档已创建：test
+# 🔗 https://feishu.cn/docx/xxxxx
+# ✅ 任何人都可以通过链接访问
+```
+
+### 配置选项
+
+```javascript
+// server/feishu-ws.js
+this.fileWatcher = new FeishuFileWatcher(watchPath, {
+  enabled: true,              // 启用文件监控
+  sendAsDocument: true,       // true=文档，false=文件附件
+  debounceDelay: 3000        // 防抖延迟（毫秒）
+});
+```
+
+### 权限管理
+
+文档创建后自动设置为"任何人可通过链接查看"，需要在飞书开放平台配置：
+- ✅ `docx:document.create` - 创建文档
+- ✅ `drive:drive.permission` - 管理文档权限⭐
+
+### 相关文档
+
+- [文档功能说明](./FEISHU_DOCUMENT_FEATURE.md)
+- [权限问题RCA分析](./RCA_DOCUMENT_PERMISSION.md)
+- [最终验证报告](./FINAL_VERIFICATION_REPORT.md)
+- [执行总结](./EXECUTION_SUMMARY.md)
+
+---
+
 ## 📄 License
 
 MIT License
@@ -141,3 +217,8 @@ MIT License
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) - Anthropic 官方 CLI
 - [gaccode.com](https://gaccode.com) - Claude Code 代理服务
 - 基于 [@siteboon/claude-code-ui](https://github.com/siteboon/claudecodeui) 修改
+
+---
+
+**最后更新**: 2025-11-26
+**版本**: v2.0 (新增文档自动创建功能)
