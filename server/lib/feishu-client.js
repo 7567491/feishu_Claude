@@ -6,6 +6,8 @@
  */
 
 import lark from '@larksuiteoapi/node-sdk';
+import fs from 'fs';
+import path from 'path';
 
 export class FeishuClient {
   constructor(config) {
@@ -316,5 +318,124 @@ export class FeishuClient {
       isRunning: this.isRunning,
       botInfo: this.botInfo
     };
+  }
+
+  /**
+   * Upload a file to Feishu
+   * @param {string} filePath - Path to the file to upload
+   * @returns {Promise<{file_key: string, file_name: string}>}
+   */
+  async uploadFile(filePath) {
+    try {
+      // Check if file exists
+      if (!fs.existsSync(filePath)) {
+        throw new Error(`File not found: ${filePath}`);
+      }
+
+      // Get file stats
+      const stats = fs.statSync(filePath);
+      const fileName = path.basename(filePath);
+
+      // Check file size (20MB limit for safety)
+      const maxSize = 20 * 1024 * 1024; // 20MB
+      if (stats.size > maxSize) {
+        throw new Error(`File too large: ${(stats.size / 1024 / 1024).toFixed(2)}MB (max 20MB)`);
+      }
+
+      console.log('[FeishuClient] Uploading file:', fileName, `(${(stats.size / 1024).toFixed(2)}KB)`);
+
+      // Create file stream
+      const fileStream = fs.createReadStream(filePath);
+
+      // Upload file using Lark SDK
+      const res = await this.client.im.file.create({
+        data: {
+          file_type: 'stream',
+          file_name: fileName,
+          file: fileStream
+        }
+      });
+
+      // SDK returns data directly on success, throws error on failure
+      if (res && res.file_key) {
+        console.log('[FeishuClient] File uploaded successfully, file_key:', res.file_key);
+        return {
+          file_key: res.file_key,
+          file_name: fileName
+        };
+      } else {
+        throw new Error(`Unexpected response format: ${JSON.stringify(res)}`);
+      }
+
+    } catch (error) {
+      console.error('[FeishuClient] Failed to upload file:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Send a file message to a chat
+   * @param {string} chatId - Chat ID or Open ID
+   * @param {string} fileKey - File key returned from uploadFile
+   * @param {string} fileName - Original file name (for logging)
+   * @returns {Promise<{success: boolean, message_id: string}>}
+   */
+  async sendFileMessage(chatId, fileKey, fileName = 'file') {
+    const receiveIdType = chatId.startsWith('oc_') ? 'chat_id' : 'open_id';
+
+    try {
+      console.log('[FeishuClient] Sending file message:', fileName);
+
+      const res = await this.client.im.message.create({
+        params: {
+          receive_id_type: receiveIdType
+        },
+        data: {
+          receive_id: chatId,
+          content: JSON.stringify({ file_key: fileKey }),
+          msg_type: 'file'
+        }
+      });
+
+      if (res.code === 0) {
+        console.log('[FeishuClient] File message sent successfully');
+        return {
+          success: true,
+          message_id: res.data?.message_id
+        };
+      } else {
+        throw new Error(`Feishu API error: ${res.code} - ${res.msg}`);
+      }
+
+    } catch (error) {
+      console.error('[FeishuClient] Failed to send file message:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Upload and send a file in one operation
+   * @param {string} chatId - Chat ID or Open ID
+   * @param {string} filePath - Path to the file to send
+   * @returns {Promise<{success: boolean, message_id: string, file_key: string}>}
+   */
+  async sendFile(chatId, filePath) {
+    try {
+      // Upload file first
+      const { file_key, file_name } = await this.uploadFile(filePath);
+
+      // Then send file message
+      const result = await this.sendFileMessage(chatId, file_key, file_name);
+
+      return {
+        ...result,
+        file_key,
+        file_name
+      };
+
+    } catch (error) {
+      console.error('[FeishuClient] Failed to send file:', error.message);
+      throw error;
+    }
   }
 }

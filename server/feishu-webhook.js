@@ -6,13 +6,16 @@
  */
 
 import lark from '@larksuiteoapi/node-sdk';
+import { FeishuClient } from './lib/feishu-client.js';
 import { FeishuSessionManager } from './lib/feishu-session.js';
 import { FeishuMessageWriter } from './lib/feishu-message-writer.js';
+import { FeishuFileHandler } from './lib/feishu-file-handler.js';
 import { queryClaude } from './claude-cli.js';
 import { credentialsDb, userDb, feishuDb, initializeDatabase } from './database/db.js';
 
 // Global instances
-let client = null;
+let client = null; // Lark client for basic API calls
+let feishuClient = null; // FeishuClient for file operations
 let sessionManager = null;
 let userId = null;
 
@@ -53,6 +56,12 @@ export async function initializeFeishuWebhook() {
     appId,
     appSecret,
     domain: lark.Domain.Feishu
+  });
+
+  // Create FeishuClient for file operations
+  feishuClient = new FeishuClient({
+    appId,
+    appSecret
   });
 
   // Create session manager
@@ -132,6 +141,37 @@ async function handleMessageEvent(data) {
       userText,
       event.message?.message_id
     );
+
+    // Check if this is a file send command
+    const fileCommand = FeishuFileHandler.parseFileCommand(userText);
+    if (fileCommand && fileCommand.command === 'send') {
+      console.log('[FeishuWebhook] File send command detected:', fileCommand.fileName);
+
+      try {
+        await sendMessage(chatId, `📤 正在发送文件: ${fileCommand.fileName}...`);
+
+        await FeishuFileHandler.handleFileSend(
+          feishuClient,
+          chatId,
+          session.project_path,
+          fileCommand.fileName
+        );
+
+        await sendMessage(chatId, `✅ 文件已发送: ${fileCommand.fileName}`);
+
+        // Log success
+        feishuDb.logMessage(session.id, 'outgoing', 'file', fileCommand.fileName, null);
+        feishuDb.updateSessionActivity(session.id);
+
+        console.log('[FeishuWebhook] File sent successfully');
+        return;
+
+      } catch (error) {
+        console.error('[FeishuWebhook] Failed to send file:', error.message);
+        await sendMessage(chatId, `❌ 发送失败: ${error.message}`);
+        return;
+      }
+    }
 
     // Create message writer
     const writer = new FeishuMessageWriter(

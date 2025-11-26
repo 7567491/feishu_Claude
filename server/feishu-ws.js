@@ -12,13 +12,21 @@
 import { FeishuClient } from './lib/feishu-client.js';
 import { FeishuSessionManager } from './lib/feishu-session.js';
 import { FeishuMessageWriter } from './lib/feishu-message-writer.js';
+import { FeishuFileHandler } from './lib/feishu-file-handler.js';
+import { FeishuFileWatcher } from './lib/feishu-file-watcher.js';
 import { queryClaude } from './claude-cli.js';
 import { credentialsDb, userDb, feishuDb, initializeDatabase } from './database/db.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 class FeishuService {
   constructor() {
     this.client = null;
     this.sessionManager = null;
+    this.fileWatcher = null;
     this.userId = null;
     this.isRunning = false;
 
@@ -98,6 +106,15 @@ class FeishuService {
       // Start client with message handler
       await this.client.start(this.handleMessage.bind(this));
 
+      // Create and start file watcher
+      const watchPath = path.resolve(__dirname, '..');
+      this.fileWatcher = new FeishuFileWatcher(watchPath, {
+        enabled: true,
+        debounceDelay: 3000
+      });
+      this.fileWatcher.setClient(this.client);
+      this.fileWatcher.start();
+
       this.isRunning = true;
       console.log('[FeishuService] Service started successfully');
 
@@ -118,6 +135,10 @@ class FeishuService {
     }
 
     try {
+      if (this.fileWatcher) {
+        await this.fileWatcher.stop();
+      }
+
       if (this.client) {
         await this.client.stop();
       }
@@ -144,6 +165,11 @@ class FeishuService {
 
       // Get chat ID for sending messages
       const chatId = this.sessionManager.getFeishuId(event);
+
+      // Update active chat for file watcher
+      if (this.fileWatcher) {
+        this.fileWatcher.setActiveChatId(chatId);
+      }
 
       // Send immediate confirmation message to improve user experience
       try {
@@ -173,6 +199,37 @@ class FeishuService {
       } catch (error) {
         console.error('[FeishuService] Failed to log message:', error.message);
         // Continue anyway
+      }
+
+      // Check if this is a file send command
+      const fileCommand = FeishuFileHandler.parseFileCommand(userText);
+      if (fileCommand && fileCommand.command === 'send') {
+        console.log('[FeishuService] File send command detected:', fileCommand.fileName);
+
+        try {
+          await this.client.sendTextMessage(chatId, `📤 正在发送文件: ${fileCommand.fileName}...`);
+
+          await FeishuFileHandler.handleFileSend(
+            this.client,
+            chatId,
+            session.project_path,
+            fileCommand.fileName
+          );
+
+          await this.client.sendTextMessage(chatId, `✅ 文件已发送: ${fileCommand.fileName}`);
+
+          // Log success
+          feishuDb.logMessage(session.id, 'outgoing', 'file', fileCommand.fileName, null);
+          feishuDb.updateSessionActivity(session.id);
+
+          console.log('[FeishuService] File sent successfully');
+          return;
+
+        } catch (error) {
+          console.error('[FeishuService] Failed to send file:', error.message);
+          await this.client.sendTextMessage(chatId, `❌ 发送失败: ${error.message}`);
+          return;
+        }
       }
 
       // Create message writer
@@ -268,7 +325,8 @@ class FeishuService {
       isRunning: this.isRunning,
       userId: this.userId,
       clientStatus: this.client ? this.client.getStatus() : null,
-      stats: this.sessionManager ? this.sessionManager.getStats() : null
+      stats: this.sessionManager ? this.sessionManager.getStats() : null,
+      fileWatcher: this.fileWatcher ? this.fileWatcher.getStatus() : null
     };
   }
 }

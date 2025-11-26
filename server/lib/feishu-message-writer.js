@@ -90,9 +90,10 @@ export class FeishuMessageWriter {
       case 'assistant':
       case 'assistant_message':
         // Assistant message from Claude CLI - extract text from message.content
-        if (data.message?.content) {
+        if (data.message?.content && Array.isArray(data.message.content)) {
           for (const block of data.message.content) {
-            if (block.type === 'text' && block.text) {
+            // Add null/undefined check to prevent "Cannot read properties of null" errors
+            if (block && block.type === 'text' && block.text) {
               this.appendText(block.text);
             }
           }
@@ -280,5 +281,31 @@ export class FeishuMessageWriter {
     }
     this.buffer = '';
     console.log('[FeishuWriter] Destroyed');
+  }
+
+  /**
+   * Send a file to the chat
+   * @param {string} filePath - Path to the file to send
+   * @returns {Promise<void>}
+   */
+  async sendFile(filePath) {
+    console.log('[FeishuWriter] Sending file:', filePath);
+
+    try {
+      // Flush any pending text first
+      if (this.buffer.length > 0) {
+        await this.flush();
+      }
+
+      // Send the file using the client
+      const result = await this.feishuClient.sendFile(this.chatId, filePath);
+
+      console.log('[FeishuWriter] File sent successfully:', result.file_name);
+      return result;
+
+    } catch (error) {
+      console.error('[FeishuWriter] Failed to send file:', error.message);
+      throw error;
+    }
   }
 }
