@@ -89,8 +89,8 @@ async function queryClaude(command, options = {}, ws) {
     // Use cwd (actual project directory) instead of projectPath
     const workingDir = cwd || projectPath || process.cwd();
 
-    // Get Claude CLI path from environment or use default
-    const claudeCliPath = process.env.CLAUDE_CLI_PATH || 'claude';
+    // Get Claude CLI path from environment or use default (absolute path to avoid ENOENT)
+    const claudeCliPath = process.env.CLAUDE_CLI_PATH || '/usr/bin/claude';
 
     // Load gaccode authentication token
     const gaccodeToken = await loadGaccodeToken();
@@ -120,15 +120,30 @@ async function queryClaude(command, options = {}, ws) {
     console.log('🏠 HOME:', process.env.HOME);
     console.log('👤 USER:', process.env.USER);
 
+    // Register process BEFORE spawning to prevent race condition
+    // Use sessionId if available (for resume), otherwise generate temporary key
+    const processKey = sessionId || `pending-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    // Log session resume attempt for debugging
+    if (sessionId) {
+      console.log(`🔄 Attempting to resume session: ${sessionId}`);
+      console.log(`📊 Current active sessions: ${Array.from(activeClaudeProcesses.keys()).join(', ')}`);
+    }
+
+    // Pre-register with a placeholder to prevent concurrent requests
+    // This eliminates the race window between spawn and activeClaudeProcesses.set()
+    activeClaudeProcesses.set(processKey, 'pending');
+    console.log(`📝 Pre-registered session key: ${processKey}`);
+
     const claudeProcess = spawnFunction(claudeCliPath, args, {
       cwd: workingDir,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: spawnEnv // Pass environment variables including CLAUDECODE_TOKEN
     });
 
-    // Store process reference for potential abort
-    const processKey = capturedSessionId || Date.now().toString();
+    // Update with actual process object
     activeClaudeProcesses.set(processKey, claudeProcess);
+    console.log(`✅ Process spawned and registered for: ${processKey}`);
 
     // Handle stdout (streaming JSON responses)
     claudeProcess.stdout.on('data', (data) => {
@@ -233,11 +248,22 @@ async function queryClaude(command, options = {}, ws) {
     });
 
     // Handle process completion
-    claudeProcess.on('close', async (code) => {
-      console.log(`Claude CLI process exited with code ${code}`);
+    claudeProcess.on('close', async (code, signal) => {
+      // Log exit information with signal details
+      const finalSessionId = capturedSessionId || sessionId || processKey;
+
+      if (signal) {
+        console.log(`⚠️  Claude CLI process terminated by signal: ${signal}`);
+        console.log(`   📌 Session ID: ${finalSessionId}`);
+        console.log(`   📌 Original session ID: ${sessionId || 'new session'}`);
+        console.log(`   📌 Captured session ID: ${capturedSessionId || 'not captured yet'}`);
+        console.log(`   📌 Exit code: ${code}`);
+      } else {
+        console.log(`Claude CLI process exited with code ${code}`);
+        console.log(`   📌 Session ID: ${finalSessionId}`);
+      }
 
       // Clean up process reference
-      const finalSessionId = capturedSessionId || sessionId || processKey;
       activeClaudeProcesses.delete(finalSessionId);
 
       // Clean up temporary cwd files in log directory
@@ -259,13 +285,31 @@ async function queryClaude(command, options = {}, ws) {
         type: 'claude-complete',
         sessionId: finalSessionId,
         exitCode: code,
+        signal,
         isNewSession: !sessionId && !!command // Flag to indicate this was a new session
       }));
 
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`Claude CLI exited with code ${code}`));
+        // Provide clear error message based on exit condition
+        let errorMessage;
+        if (signal) {
+          errorMessage = `Claude CLI was terminated by signal ${signal}`;
+          // Add user-friendly explanations for common signals
+          if (signal === 'SIGTERM') {
+            errorMessage += ' (进程被正常终止，可能是因为会话被取消或系统重启)';
+          } else if (signal === 'SIGINT') {
+            errorMessage += ' (进程被用户中断)';
+          } else if (signal === 'SIGKILL') {
+            errorMessage += ' (进程被强制终止，可能是系统资源不足)';
+          }
+        } else if (code === null) {
+          errorMessage = 'Claude CLI exited abnormally (可能是并发请求冲突或进程被外部终止)';
+        } else {
+          errorMessage = `Claude CLI exited with code ${code}`;
+        }
+        reject(new Error(errorMessage));
       }
     });
 
@@ -294,6 +338,13 @@ function abortClaudeSession(sessionId) {
   const process = activeClaudeProcesses.get(sessionId);
   if (process) {
     console.log(`🛑 Aborting Claude session: ${sessionId}`);
+    // Check if it's still in pending state (before process fully spawned)
+    if (process === 'pending') {
+      console.log(`⚠️  Session ${sessionId} is still pending, removing from queue`);
+      activeClaudeProcesses.delete(sessionId);
+      return true;
+    }
+    // Kill the actual process
     process.kill('SIGTERM');
     activeClaudeProcesses.delete(sessionId);
     return true;

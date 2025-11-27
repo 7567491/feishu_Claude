@@ -371,7 +371,7 @@ const feishuDb = {
         (conversation_id, feishu_id, session_type, project_path, claude_session_id, user_id)
         VALUES (?, ?, ?, ?, ?, ?)
       `);
-      const result = stmt.run(conversationId, feishuId, sessionType, projectPath, claudeSessionId, userId);
+      const result = stmt.run(conversationId, feishuId, sessionType, projectPath, userId, claudeSessionId);
       return {
         id: result.lastInsertRowid,
         conversation_id: conversationId,
@@ -399,6 +399,16 @@ const feishuDb = {
   updateClaudeSessionId: (sessionId, claudeSessionId) => {
     try {
       db.prepare('UPDATE feishu_sessions SET claude_session_id = ? WHERE id = ?').run(claudeSessionId, sessionId);
+    } catch (err) {
+      throw err;
+    }
+  },
+
+  // Clear all Claude session IDs (useful after service restart)
+  clearAllClaudeSessionIds: () => {
+    try {
+      const result = db.prepare('UPDATE feishu_sessions SET claude_session_id = NULL WHERE claude_session_id IS NOT NULL').run();
+      return result.changes;
     } catch (err) {
       throw err;
     }

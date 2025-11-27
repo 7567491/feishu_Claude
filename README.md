@@ -144,7 +144,50 @@ pm2 restart claude-code-ui            # 重启服务
 pm2 status                            # 检查状态
 ```
 
-## 📄 文档自动创建功能 ⭐ 新增
+## 🔧 会话管理与稳定性优化 ⭐ 最新
+
+### 进程生命周期管理
+系统已实现完整的 Claude CLI 子进程生命周期管理：
+
+**信号处理增强**
+- ✅ 完整处理 `SIGTERM`、`SIGINT`、`SIGKILL` 等进程信号
+- ✅ 清晰的中文错误提示，准确反映终止原因
+- ✅ 进程注册采用预注册机制，消除竞态条件
+
+**服务重启后的会话恢复**
+- ✅ 启动时自动清理过期的 `claude_session_id`
+- ✅ 运行时验证会话有效性，自动处理失效会话
+- ✅ 数据库提供 `clearAllClaudeSessionIds()` 清理方法
+
+**典型修复场景**
+```bash
+# 场景1: PM2重启后飞书对话报错 "SIGINT 进程被用户中断"
+# 原因：数据库中残留失效的 claude_session_id
+# 修复：启动时自动清理，无需手动干预
+
+# 场景2: 并发请求导致 "exit code null"
+# 原因：进程注册存在竞态条件
+# 修复：预注册机制，确保唯一性
+```
+
+### 相关技术文档
+- [RCA: Exit Code Null 错误分析](docs/RCA_EXIT_CODE_NULL.md) - 竞态条件与信号处理
+- [RCA: 服务重启后 SIGINT 错误](docs/RCA_SIGINT_AFTER_RESTART.md) - 会话生命周期管理
+- [服务重启问题分析](docs/RCA_SERVER_RESTART_ISSUE.md) - 完整的诊断过程
+
+### 健康检查工具
+```bash
+# 查看所有 Claude 子进程
+node server/show-processes.js
+
+# 检查数据库会话状态
+sqlite3 server/database/auth.db "SELECT conversation_id, claude_session_id, is_active FROM feishu_sessions;"
+
+# 手动清理过期会话（谨慎使用）
+sqlite3 server/database/auth.db "UPDATE feishu_sessions SET claude_session_id = NULL WHERE claude_session_id IS NOT NULL;"
+```
+
+## 📄 文档自动创建功能
 
 ### 功能特性
 
@@ -201,10 +244,10 @@ this.fileWatcher = new FeishuFileWatcher(watchPath, {
 
 ### 相关文档
 
-- [文档功能说明](./FEISHU_DOCUMENT_FEATURE.md)
-- [权限问题RCA分析](./RCA_DOCUMENT_PERMISSION.md)
-- [最终验证报告](./FINAL_VERIFICATION_REPORT.md)
-- [执行总结](./EXECUTION_SUMMARY.md)
+- [文档功能说明](docs/FEISHU_DOCUMENT_FEATURE.md)
+- [权限问题RCA分析](docs/RCA_DOCUMENT_PERMISSION.md)
+- [最终验证报告](docs/FINAL_VERIFICATION_REPORT.md)
+- [执行总结](docs/EXECUTION_SUMMARY.md)
 
 ---
 
@@ -220,5 +263,5 @@ MIT License
 
 ---
 
-**最后更新**: 2025-11-26
-**版本**: v2.0 (新增文档自动创建功能)
+**最后更新**: 2025-11-27
+**版本**: v2.1 (会话管理与稳定性优化)

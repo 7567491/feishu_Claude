@@ -29,7 +29,16 @@
     "preview": "vite preview",
     "start": "npm run build && npm run server",
     "release": "./release.sh",
-    "feishu": "node server/feishu-ws.js"
+    "feishu": "node server/feishu-ws.js",
+    "test": "node test/server-restart-rca.test.js",
+    "test:feishu": "node test/feishu/test-integration.js",
+    "test:all": "npm run test && npm run test:feishu",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:restart": "pm2 restart ecosystem.config.cjs",
+    "pm2:reload": "pm2 reload ecosystem.config.cjs",
+    "pm2:stop": "pm2 stop ecosystem.config.cjs",
+    "pm2:logs": "pm2 logs",
+    "pm2:status": "pm2 status"
   },
   "keywords": [
     "claude coode",

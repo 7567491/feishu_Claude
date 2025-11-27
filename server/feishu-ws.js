@@ -97,6 +97,11 @@ class FeishuService {
       // Create session manager
       this.sessionManager = new FeishuSessionManager(this.userId, './feicc');
 
+      // Clear all stale Claude session IDs on startup (after service restart)
+      console.log('[FeishuService] 🧹 Clearing stale Claude session IDs after restart...');
+      const staleCount = feishuDb.clearAllClaudeSessionIds();
+      console.log(`[FeishuService] ✅ Cleared ${staleCount} stale session IDs`);
+
       // Create Feishu client
       this.client = new FeishuClient({
         appId: config.appId,

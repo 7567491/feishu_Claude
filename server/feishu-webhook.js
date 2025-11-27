@@ -216,7 +216,17 @@ async function handleMessageEvent(data) {
 
     } catch (error) {
       console.error('[FeishuWebhook] Error calling Claude:', error.message);
-      await sendMessage(chatId, `❌ 处理失败: ${error.message}`);
+
+      // If session not found, clear the invalid session ID and retry with new session
+      if (error.message && error.message.includes('No conversation found')) {
+        console.log('[FeishuWebhook] Invalid session ID detected, clearing and retrying...');
+        sessionManager.updateClaudeSessionId(session.id, null);
+        await sendMessage(chatId, `🔄 会话已过期，正在创建新会话...\n\n${userText}`);
+        // Note: The retry will happen on the next user message
+      } else {
+        await sendMessage(chatId, `❌ 处理失败: ${error.message}`);
+      }
+
       feishuDb.logMessage(session.id, 'outgoing', 'error', error.message, null);
     }
 

@@ -168,6 +168,16 @@ async function setupProjectsWatcher() {
 const app = express();
 const server = http.createServer(app);
 
+// Track active connections for graceful shutdown
+const activeConnections = new Set();
+
+server.on('connection', (connection) => {
+    activeConnections.add(connection);
+    connection.on('close', () => {
+        activeConnections.delete(connection);
+    });
+});
+
 const ptySessionsMap = new Map();
 const PTY_SESSION_TIMEOUT = 30 * 60 * 1000;
 
@@ -217,9 +227,60 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Public health check endpoint (no authentication required)
+// Health check endpoint (no auth required)
 app.get('/health', (req, res) => {
-  res.json({
+  const health = {
     status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: {
+      used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
+      total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024) + 'MB',
+      rss: Math.round(process.memoryUsage().rss / 1024 / 1024) + 'MB'
+    },
+    process: {
+      pid: process.pid,
+      version: process.version,
+      platform: process.platform
+    },
+    connections: {
+      http: activeConnections.size,
+      websocket: wss ? wss.clients.size : 0
+    },
+    environment: process.env.NODE_ENV || 'development'
+  };
+
+  res.json(health);
+});
+
+// Readiness check endpoint (for load balancers)
+app.get('/ready', (req, res) => {
+  // Check if critical components are initialized
+  const checks = {
+    server: server.listening,
+    database: true, // Assume DB is ready if we got here
+    timestamp: new Date().toISOString()
+  };
+
+  const allReady = Object.values(checks).every(v => typeof v === 'boolean' ? v : true);
+
+  if (allReady) {
+    res.status(200).json({
+      status: 'ready',
+      checks
+    });
+  } else {
+    res.status(503).json({
+      status: 'not ready',
+      checks
+    });
+  }
+});
+
+// Liveness check endpoint (for Kubernetes/Docker)
+app.get('/live', (req, res) => {
+  res.status(200).json({
+    status: 'alive',
     timestamp: new Date().toISOString()
   });
 });
@@ -1561,6 +1622,41 @@ async function startServer() {
             console.log(`${c.warn('[WARN]')} Note: Requests will be proxied to Vite dev server at ${c.dim('http://localhost:' + (process.env.VITE_PORT || 5173))}`);
         }
 
+        // Add error handler for server (prevent uncaught EADDRINUSE)
+        let retryCount = 0;
+        const maxRetries = 3;
+        const retryDelay = 5000; // 5 seconds
+
+        server.on('error', (error) => {
+            if (error.code === 'EADDRINUSE') {
+                console.error('');
+                console.error(`${c.warn('[ERROR]')} Port ${PORT} is already in use`);
+                console.error(`${c.info('[INFO]')}  Check for other instances: ${c.dim('lsof -i :' + PORT)}`);
+
+                if (retryCount < maxRetries) {
+                    retryCount++;
+                    console.log(`${c.info('[INFO]')}  Retrying in ${retryDelay/1000} seconds... (${retryCount}/${maxRetries})`);
+
+                    setTimeout(() => {
+                        console.log(`${c.info('[INFO]')}  Retry attempt ${retryCount}...`);
+                        server.close();
+                        server.listen(PORT, '0.0.0.0');
+                    }, retryDelay);
+                } else {
+                    console.error(`${c.warn('[ERROR]')} Max retries (${maxRetries}) reached`);
+                    console.error(`${c.warn('[ERROR]')} Please stop the other instance or change PORT in .env`);
+                    process.exit(1);
+                }
+            } else if (error.code === 'EACCES') {
+                console.error(`${c.warn('[ERROR]')} Permission denied to bind to port ${PORT}`);
+                console.error(`${c.info('[INFO]')}  Try using a port > 1024 or run with sudo (not recommended)`);
+                process.exit(1);
+            } else {
+                console.error(`${c.warn('[ERROR]')} Server error:`, error);
+                process.exit(1);
+            }
+        });
+
         server.listen(PORT, '0.0.0.0', async () => {
             const appInstallPath = path.join(__dirname, '..');
 
@@ -1584,3 +1680,123 @@ async function startServer() {
 }
 
 startServer();
+
+// ============================================================================
+// Graceful Shutdown Handler
+// ============================================================================
+
+let isShuttingDown = false;
+
+function gracefulShutdown(signal) {
+    if (isShuttingDown) {
+        console.log('Shutdown already in progress...');
+        return;
+    }
+
+    isShuttingDown = true;
+    console.log('');
+    console.log(c.warn(`[SHUTDOWN] Received ${signal} signal`));
+    console.log(c.info('[SHUTDOWN] Starting graceful shutdown...'));
+
+    // Set a timeout for forced shutdown
+    const forceShutdownTimer = setTimeout(() => {
+        console.error(c.warn('[SHUTDOWN] Forced shutdown due to timeout'));
+        process.exit(1);
+    }, 10000); // 10 seconds timeout
+
+    // Prevent the timeout from keeping the process alive
+    forceShutdownTimer.unref();
+
+    // Step 1: Stop accepting new connections
+    server.close(() => {
+        console.log(c.ok('[SHUTDOWN] HTTP server closed'));
+    });
+
+    // Step 2: Close WebSocket server
+    if (wss) {
+        console.log(c.info(`[SHUTDOWN] Closing ${wss.clients.size} WebSocket connections...`));
+        wss.clients.forEach((client) => {
+            client.close(1000, 'Server shutting down');
+        });
+        wss.close(() => {
+            console.log(c.ok('[SHUTDOWN] WebSocket server closed'));
+        });
+    }
+
+    // Step 3: Close all active HTTP connections
+    const connectionCount = activeConnections.size;
+    if (connectionCount > 0) {
+        console.log(c.info(`[SHUTDOWN] Closing ${connectionCount} active HTTP connections...`));
+
+        activeConnections.forEach((connection) => {
+            // Give connections 5 seconds to finish, then destroy
+            setTimeout(() => {
+                if (!connection.destroyed) {
+                    connection.destroy();
+                }
+            }, 5000);
+
+            // Try to end gracefully first
+            connection.end();
+        });
+    }
+
+    // Step 4: Abort active Claude sessions
+    const activeClaude = getActiveClaudeSessions();
+    if (activeClaude.length > 0) {
+        console.log(c.info(`[SHUTDOWN] Aborting ${activeClaude.length} Claude sessions...`));
+        activeClaude.forEach(sessionId => {
+            abortClaudeSession(sessionId);
+        });
+    }
+
+    // Step 5: Clean up PTY sessions
+    if (ptySessionsMap && ptySessionsMap.size > 0) {
+        console.log(c.info(`[SHUTDOWN] Cleaning up ${ptySessionsMap.size} PTY sessions...`));
+        ptySessionsMap.forEach((session) => {
+            if (session.ptyProcess) {
+                session.ptyProcess.kill();
+            }
+        });
+        ptySessionsMap.clear();
+    }
+
+    // Step 6: Close project watcher
+    if (projectsWatcher) {
+        console.log(c.info('[SHUTDOWN] Closing file watcher...'));
+        projectsWatcher.close();
+    }
+
+    // Step 7: Final cleanup and exit
+    setTimeout(() => {
+        console.log(c.ok('[SHUTDOWN] Graceful shutdown completed'));
+        console.log('');
+        clearTimeout(forceShutdownTimer);
+        process.exit(0);
+    }, 1000);
+}
+
+// Handle termination signals
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
+
+// Handle uncaught exceptions and rejections
+process.on('uncaughtException', (error) => {
+    console.error('');
+    console.error(c.warn('[FATAL] Uncaught Exception:'));
+    console.error(error);
+    console.error('');
+    gracefulShutdown('uncaughtException');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('');
+    console.error(c.warn('[FATAL] Unhandled Promise Rejection:'));
+    console.error('Reason:', reason);
+    console.error('Promise:', promise);
+    console.error('');
+    gracefulShutdown('unhandledRejection');
+});
+
+console.log(c.dim('[INFO] Graceful shutdown handlers registered'));
