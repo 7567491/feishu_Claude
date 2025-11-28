@@ -65,9 +65,14 @@ CLAUDE_CLI_PATH=claude                  # CLI 路径
 ANTHROPIC_BASE_URL=https://gaccode.com/claudecode
 FeishuCC_App_ID=cli_xxx                 # 飞书应用配置（WebSocket模式）
 FeishuCC_App_Secret=xxx
+Github_Token=github_pat_xxx             # GitHub Personal Access Token（用于仓库操作、PR管理等）
+DEEPSEEK_API_KEY=sk-xxx                 # DeepSeek API（用于对话摘要）
 ```
 
-认证 token 自动从 `~/.claudecode/config` 读取（需先完成 `claude` CLI 登录）
+**认证配置说明：**
+- Claude 认证 token 自动从 `~/.claudecode/config` 读取（需先完成 `claude` CLI 登录）
+- GitHub Token：从系统环境变量 `Github_Token` 中配置，用于 Git 仓库操作和 API 调用
+- DeepSeek API Key：用于对话摘要功能
 
 ## 🤖 飞书集成
 
