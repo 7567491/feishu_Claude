@@ -73,6 +73,45 @@ DEEPSEEK_API_KEY=sk-xxx                 # DeepSeek API（用于对话摘要）
 - GitHub Token：从系统环境变量 `Github_Token` 中配置，用于 Git 仓库操作和 API 调用
 - DeepSeek API Key：用于对话摘要功能
 
+## 📤 GitHub 仓库推送流程
+
+### 自动化推送脚本
+
+系统已配置自动推送到 GitHub 仓库：https://github.com/7567491/feishu_Claude
+
+**关键步骤：**
+
+```bash
+# 1. 从系统环境变量获取 GitHub Token
+export Github_Token=$(env | grep Github_Token | cut -d= -f2)
+
+# 2. 将 Token 存入 .env 文件（如果还没有）
+echo "Github_Token=$Github_Token" >> .env
+
+# 3. 配置 Git remote（首次需要）
+cd /home/ccp
+git remote add origin https://github.com/7567491/feishu_Claude.git
+
+# 4. 配置使用 Token 进行认证
+git remote set-url origin https://${Github_Token}@github.com/7567491/feishu_Claude.git
+
+# 5. 推送代码到远程仓库
+git push -u origin main
+```
+
+**后续推送：**
+```bash
+cd /home/ccp
+git add .
+git commit -m "你的提交信息"
+git push origin main
+```
+
+**注意事项：**
+- Token 已包含在 remote URL 中，无需再次输入密码
+- 确保 Token 具有 `repo` 权限
+- 定期更新 Token 避免过期
+
 ## 🤖 飞书集成
 
 - **Webhook 事件订阅模式**，支持私聊和群聊
