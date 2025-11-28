@@ -47,13 +47,11 @@ try {
 console.log('PORT from env:', process.env.PORT);
 
 import express from 'express';
-import { WebSocketServer, WebSocket } from 'ws';
 import os from 'os';
 import http from 'http';
 import cors from 'cors';
 import { promises as fsPromises } from 'fs';
 import { spawn } from 'child_process';
-import pty from 'node-pty';
 import fetch from 'node-fetch';
 import mime from 'mime-types';
 
@@ -80,7 +78,6 @@ import { initializeFeishuWebhook, createWebhookHandler } from './feishu-webhook.
 
 // File system watcher for projects folder
 let projectsWatcher = null;
-const connectedClients = new Set();
 
 // Setup file system watcher for Claude projects folder using chokidar
 async function setupProjectsWatcher() {
@@ -119,28 +116,8 @@ async function setupProjectsWatcher() {
             clearTimeout(debounceTimer);
             debounceTimer = setTimeout(async () => {
                 try {
-
                     // Clear project directory cache when files change
                     clearProjectDirectoryCache();
-
-                    // Get updated projects list
-                    const updatedProjects = await getProjects();
-
-                    // Notify all connected clients about the project changes
-                    const updateMessage = JSON.stringify({
-                        type: 'projects_updated',
-                        projects: updatedProjects,
-                        timestamp: new Date().toISOString(),
-                        changeType: eventType,
-                        changedFile: path.relative(claudeProjectsPath, filePath)
-                    });
-
-                    connectedClients.forEach(client => {
-                        if (client.readyState === WebSocket.OPEN) {
-                            client.send(updateMessage);
-                        }
-                    });
-
                 } catch (error) {
                     console.error('[ERROR] Error handling project changes:', error);
                 }
@@ -179,50 +156,6 @@ server.on('connection', (connection) => {
     });
 });
 
-const ptySessionsMap = new Map();
-const PTY_SESSION_TIMEOUT = 30 * 60 * 1000;
-
-// Single WebSocket server that handles both paths
-const wss = new WebSocketServer({
-    server,
-    verifyClient: (info) => {
-        console.log('WebSocket connection attempt to:', info.req.url);
-
-        // Platform mode: always allow connection
-        if (process.env.VITE_IS_PLATFORM === 'true') {
-            const user = authenticateWebSocket(null); // Will return first user
-            if (!user) {
-                console.log('[WARN] Platform mode: No user found in database');
-                return false;
-            }
-            info.req.user = user;
-            console.log('[OK] Platform mode WebSocket authenticated for user:', user.username);
-            return true;
-        }
-
-        // Normal mode: verify token
-        // Extract token from query parameters or headers
-        const url = new URL(info.req.url, 'http://localhost');
-        const token = url.searchParams.get('token') ||
-            info.req.headers.authorization?.split(' ')[1];
-
-        // Verify token
-        const user = authenticateWebSocket(token);
-        if (!user) {
-            console.log('[WARN] WebSocket authentication failed');
-            return false;
-        }
-
-        // Store user info in the request for later use
-        info.req.user = user;
-        console.log('[OK] WebSocket authenticated for user:', user.username);
-        return true;
-    }
-});
-
-// Make WebSocket server available to routes
-app.locals.wss = wss;
-
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -245,8 +178,7 @@ app.get('/health', (req, res) => {
       platform: process.platform
     },
     connections: {
-      http: activeConnections.size,
-      websocket: wss ? wss.clients.size : 0
+      http: activeConnections.size
     },
     environment: process.env.NODE_ENV || 'development'
   };
@@ -756,417 +688,6 @@ app.get('/api/projects/:projectName/files', authenticateToken, async (req, res) 
     }
 });
 
-// WebSocket connection handler that routes based on URL path
-wss.on('connection', (ws, request) => {
-    const url = request.url;
-    console.log('[INFO] Client connected to:', url);
-
-    // Parse URL to get pathname without query parameters
-    const urlObj = new URL(url, 'http://localhost');
-    const pathname = urlObj.pathname;
-
-    if (pathname === '/shell') {
-        handleShellConnection(ws);
-    } else if (pathname === '/ws') {
-        handleChatConnection(ws);
-    } else {
-        console.log('[WARN] Unknown WebSocket path:', pathname);
-        ws.close();
-    }
-});
-
-// Handle chat WebSocket connections
-function handleChatConnection(ws) {
-    console.log('[INFO] Chat WebSocket connected');
-
-    // Add to connected clients for project updates
-    connectedClients.add(ws);
-
-    ws.on('message', async (message) => {
-        try {
-            const data = JSON.parse(message);
-
-            if (data.type === 'claude-command') {
-                console.log('[DEBUG] User message:', data.command || '[Continue/Resume]');
-                console.log('📁 Project:', data.options?.projectPath || 'Unknown');
-                console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
-
-                // Use Claude CLI
-                await queryClaude(data.command, data.options, ws);
-            } else if (data.type === 'cursor-command') {
-                console.log('[DEBUG] Cursor message:', data.command || '[Continue/Resume]');
-                console.log('📁 Project:', data.options?.cwd || 'Unknown');
-                console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
-                console.log('🤖 Model:', data.options?.model || 'default');
-                await spawnCursor(data.command, data.options, ws);
-            } else if (data.type === 'cursor-resume') {
-                // Backward compatibility: treat as cursor-command with resume and no prompt
-                console.log('[DEBUG] Cursor resume session (compat):', data.sessionId);
-                await spawnCursor('', {
-                    sessionId: data.sessionId,
-                    resume: true,
-                    cwd: data.options?.cwd
-                }, ws);
-            } else if (data.type === 'abort-session') {
-                console.log('[DEBUG] Abort session request:', data.sessionId);
-                const provider = data.provider || 'claude';
-                let success;
-
-                if (provider === 'cursor') {
-                    success = abortCursorSession(data.sessionId);
-                } else {
-                    // Use Claude CLI
-                    success = await abortClaudeSession(data.sessionId);
-                }
-
-                ws.send(JSON.stringify({
-                    type: 'session-aborted',
-                    sessionId: data.sessionId,
-                    provider,
-                    success
-                }));
-            } else if (data.type === 'cursor-abort') {
-                console.log('[DEBUG] Abort Cursor session:', data.sessionId);
-                const success = abortCursorSession(data.sessionId);
-                ws.send(JSON.stringify({
-                    type: 'session-aborted',
-                    sessionId: data.sessionId,
-                    provider: 'cursor',
-                    success
-                }));
-            } else if (data.type === 'check-session-status') {
-                // Check if a specific session is currently processing
-                const provider = data.provider || 'claude';
-                const sessionId = data.sessionId;
-                let isActive;
-
-                if (provider === 'cursor') {
-                    isActive = isCursorSessionActive(sessionId);
-                } else {
-                    // Use Claude CLI
-                    isActive = isClaudeSessionActive(sessionId);
-                }
-
-                ws.send(JSON.stringify({
-                    type: 'session-status',
-                    sessionId,
-                    provider,
-                    isProcessing: isActive
-                }));
-            } else if (data.type === 'get-active-sessions') {
-                // Get all currently active sessions
-                const activeSessions = {
-                    claude: getActiveClaudeSessions(),
-                    cursor: getActiveCursorSessions()
-                };
-                ws.send(JSON.stringify({
-                    type: 'active-sessions',
-                    sessions: activeSessions
-                }));
-            }
-        } catch (error) {
-            console.error('[ERROR] Chat WebSocket error:', error.message);
-            ws.send(JSON.stringify({
-                type: 'error',
-                error: error.message
-            }));
-        }
-    });
-
-    ws.on('close', () => {
-        console.log('🔌 Chat client disconnected');
-        // Remove from connected clients
-        connectedClients.delete(ws);
-    });
-}
-
-// Handle shell WebSocket connections
-function handleShellConnection(ws) {
-    console.log('🐚 Shell client connected');
-    let shellProcess = null;
-    let ptySessionKey = null;
-    let outputBuffer = [];
-
-    ws.on('message', async (message) => {
-        try {
-            const data = JSON.parse(message);
-            console.log('📨 Shell message received:', data.type);
-
-            if (data.type === 'init') {
-                const projectPath = data.projectPath || process.cwd();
-                const sessionId = data.sessionId;
-                const hasSession = data.hasSession;
-                const provider = data.provider || 'claude';
-                const initialCommand = data.initialCommand;
-                const isPlainShell = data.isPlainShell || (!!initialCommand && !hasSession) || provider === 'plain-shell';
-
-                ptySessionKey = `${projectPath}_${sessionId || 'default'}`;
-
-                const existingSession = ptySessionsMap.get(ptySessionKey);
-                if (existingSession) {
-                    console.log('♻️  Reconnecting to existing PTY session:', ptySessionKey);
-                    shellProcess = existingSession.pty;
-
-                    clearTimeout(existingSession.timeoutId);
-
-                    ws.send(JSON.stringify({
-                        type: 'output',
-                        data: `\x1b[36m[Reconnected to existing session]\x1b[0m\r\n`
-                    }));
-
-                    if (existingSession.buffer && existingSession.buffer.length > 0) {
-                        console.log(`📜 Sending ${existingSession.buffer.length} buffered messages`);
-                        existingSession.buffer.forEach(bufferedData => {
-                            ws.send(JSON.stringify({
-                                type: 'output',
-                                data: bufferedData
-                            }));
-                        });
-                    }
-
-                    existingSession.ws = ws;
-
-                    return;
-                }
-
-                console.log('[INFO] Starting shell in:', projectPath);
-                console.log('📋 Session info:', hasSession ? `Resume session ${sessionId}` : (isPlainShell ? 'Plain shell mode' : 'New session'));
-                console.log('🤖 Provider:', isPlainShell ? 'plain-shell' : provider);
-                if (initialCommand) {
-                    console.log('⚡ Initial command:', initialCommand);
-                }
-
-                // First send a welcome message
-                let welcomeMsg;
-                if (isPlainShell) {
-                    welcomeMsg = `\x1b[36mStarting terminal in: ${projectPath}\x1b[0m\r\n`;
-                } else {
-                    const providerName = provider === 'cursor' ? 'Cursor' : 'Claude';
-                    welcomeMsg = hasSession ?
-                        `\x1b[36mResuming ${providerName} session ${sessionId} in: ${projectPath}\x1b[0m\r\n` :
-                        `\x1b[36mStarting new ${providerName} session in: ${projectPath}\x1b[0m\r\n`;
-                }
-
-                ws.send(JSON.stringify({
-                    type: 'output',
-                    data: welcomeMsg
-                }));
-
-                try {
-                    // Prepare the shell command adapted to the platform and provider
-                    let shellCommand;
-                    if (isPlainShell) {
-                        // Plain shell mode - just run the initial command in the project directory
-                        if (os.platform() === 'win32') {
-                            shellCommand = `Set-Location -Path "${projectPath}"; ${initialCommand}`;
-                        } else {
-                            shellCommand = `cd "${projectPath}" && ${initialCommand}`;
-                        }
-                    } else if (provider === 'cursor') {
-                        // Use cursor-agent command
-                        if (os.platform() === 'win32') {
-                            if (hasSession && sessionId) {
-                                shellCommand = `Set-Location -Path "${projectPath}"; cursor-agent --resume="${sessionId}"`;
-                            } else {
-                                shellCommand = `Set-Location -Path "${projectPath}"; cursor-agent`;
-                            }
-                        } else {
-                            if (hasSession && sessionId) {
-                                shellCommand = `cd "${projectPath}" && cursor-agent --resume="${sessionId}"`;
-                            } else {
-                                shellCommand = `cd "${projectPath}" && cursor-agent`;
-                            }
-                        }
-                    } else {
-                        // Use claude command (default) or initialCommand if provided
-                        const command = initialCommand || 'claude';
-                        if (os.platform() === 'win32') {
-                            if (hasSession && sessionId) {
-                                // Try to resume session, but with fallback to new session if it fails
-                                shellCommand = `Set-Location -Path "${projectPath}"; claude --resume ${sessionId}; if ($LASTEXITCODE -ne 0) { claude }`;
-                            } else {
-                                shellCommand = `Set-Location -Path "${projectPath}"; ${command}`;
-                            }
-                        } else {
-                            if (hasSession && sessionId) {
-                                shellCommand = `cd "${projectPath}" && claude --resume ${sessionId} || claude`;
-                            } else {
-                                shellCommand = `cd "${projectPath}" && ${command}`;
-                            }
-                        }
-                    }
-
-                    console.log('🔧 Executing shell command:', shellCommand);
-
-                    // Use appropriate shell based on platform
-                    const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
-                    const shellArgs = os.platform() === 'win32' ? ['-Command', shellCommand] : ['-c', shellCommand];
-
-                    // Use terminal dimensions from client if provided, otherwise use defaults
-                    const termCols = data.cols || 80;
-                    const termRows = data.rows || 24;
-                    console.log('📐 Using terminal dimensions:', termCols, 'x', termRows);
-
-                    shellProcess = pty.spawn(shell, shellArgs, {
-                        name: 'xterm-256color',
-                        cols: termCols,
-                        rows: termRows,
-                        cwd: process.env.HOME || (os.platform() === 'win32' ? process.env.USERPROFILE : '/'),
-                        env: {
-                            ...process.env,
-                            TERM: 'xterm-256color',
-                            COLORTERM: 'truecolor',
-                            FORCE_COLOR: '3',
-                            // Override browser opening commands to echo URL for detection
-                            BROWSER: os.platform() === 'win32' ? 'echo "OPEN_URL:"' : 'echo "OPEN_URL:"'
-                        }
-                    });
-
-                    console.log('🟢 Shell process started with PTY, PID:', shellProcess.pid);
-
-                    ptySessionsMap.set(ptySessionKey, {
-                        pty: shellProcess,
-                        ws: ws,
-                        buffer: [],
-                        timeoutId: null,
-                        projectPath,
-                        sessionId
-                    });
-
-                    // Handle data output
-                    shellProcess.onData((data) => {
-                        const session = ptySessionsMap.get(ptySessionKey);
-                        if (!session) return;
-
-                        if (session.buffer.length < 5000) {
-                            session.buffer.push(data);
-                        } else {
-                            session.buffer.shift();
-                            session.buffer.push(data);
-                        }
-
-                        if (session.ws && session.ws.readyState === WebSocket.OPEN) {
-                            let outputData = data;
-
-                            // Check for various URL opening patterns
-                            const patterns = [
-                                // Direct browser opening commands
-                                /(?:xdg-open|open|start)\s+(https?:\/\/[^\s\x1b\x07]+)/g,
-                                // BROWSER environment variable override
-                                /OPEN_URL:\s*(https?:\/\/[^\s\x1b\x07]+)/g,
-                                // Git and other tools opening URLs
-                                /Opening\s+(https?:\/\/[^\s\x1b\x07]+)/gi,
-                                // General URL patterns that might be opened
-                                /Visit:\s*(https?:\/\/[^\s\x1b\x07]+)/gi,
-                                /View at:\s*(https?:\/\/[^\s\x1b\x07]+)/gi,
-                                /Browse to:\s*(https?:\/\/[^\s\x1b\x07]+)/gi
-                            ];
-
-                            patterns.forEach(pattern => {
-                                let match;
-                                while ((match = pattern.exec(data)) !== null) {
-                                    const url = match[1];
-                                    console.log('[DEBUG] Detected URL for opening:', url);
-
-                                    // Send URL opening message to client
-                                    session.ws.send(JSON.stringify({
-                                        type: 'url_open',
-                                        url: url
-                                    }));
-
-                                    // Replace the OPEN_URL pattern with a user-friendly message
-                                    if (pattern.source.includes('OPEN_URL')) {
-                                        outputData = outputData.replace(match[0], `[INFO] Opening in browser: ${url}`);
-                                    }
-                                }
-                            });
-
-                            // Send regular output
-                            session.ws.send(JSON.stringify({
-                                type: 'output',
-                                data: outputData
-                            }));
-                        }
-                    });
-
-                    // Handle process exit
-                    shellProcess.onExit((exitCode) => {
-                        console.log('🔚 Shell process exited with code:', exitCode.exitCode, 'signal:', exitCode.signal);
-                        const session = ptySessionsMap.get(ptySessionKey);
-                        if (session && session.ws && session.ws.readyState === WebSocket.OPEN) {
-                            session.ws.send(JSON.stringify({
-                                type: 'output',
-                                data: `\r\n\x1b[33mProcess exited with code ${exitCode.exitCode}${exitCode.signal ? ` (${exitCode.signal})` : ''}\x1b[0m\r\n`
-                            }));
-                        }
-                        if (session && session.timeoutId) {
-                            clearTimeout(session.timeoutId);
-                        }
-                        ptySessionsMap.delete(ptySessionKey);
-                        shellProcess = null;
-                    });
-
-                } catch (spawnError) {
-                    console.error('[ERROR] Error spawning process:', spawnError);
-                    ws.send(JSON.stringify({
-                        type: 'output',
-                        data: `\r\n\x1b[31mError: ${spawnError.message}\x1b[0m\r\n`
-                    }));
-                }
-
-            } else if (data.type === 'input') {
-                // Send input to shell process
-                if (shellProcess && shellProcess.write) {
-                    try {
-                        shellProcess.write(data.data);
-                    } catch (error) {
-                        console.error('Error writing to shell:', error);
-                    }
-                } else {
-                    console.warn('No active shell process to send input to');
-                }
-            } else if (data.type === 'resize') {
-                // Handle terminal resize
-                if (shellProcess && shellProcess.resize) {
-                    console.log('Terminal resize requested:', data.cols, 'x', data.rows);
-                    shellProcess.resize(data.cols, data.rows);
-                }
-            }
-        } catch (error) {
-            console.error('[ERROR] Shell WebSocket error:', error.message);
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                    type: 'output',
-                    data: `\r\n\x1b[31mError: ${error.message}\x1b[0m\r\n`
-                }));
-            }
-        }
-    });
-
-    ws.on('close', () => {
-        console.log('🔌 Shell client disconnected');
-
-        if (ptySessionKey) {
-            const session = ptySessionsMap.get(ptySessionKey);
-            if (session) {
-                console.log('⏳ PTY session kept alive, will timeout in 30 minutes:', ptySessionKey);
-                session.ws = null;
-
-                session.timeoutId = setTimeout(() => {
-                    console.log('⏰ PTY session timeout, killing process:', ptySessionKey);
-                    if (session.pty && session.pty.kill) {
-                        session.pty.kill();
-                    }
-                    ptySessionsMap.delete(ptySessionKey);
-                }, PTY_SESSION_TIMEOUT);
-            }
-        }
-    });
-
-    ws.on('error', (error) => {
-        console.error('[ERROR] Shell WebSocket error:', error);
-    });
-}
 // Audio transcription endpoint
 app.post('/api/transcribe', authenticateToken, async (req, res) => {
     try {
@@ -1716,16 +1237,6 @@ function gracefulShutdown(signal) {
         console.log(c.ok('[SHUTDOWN] HTTP server closed'));
     });
 
-    // Step 2: Close WebSocket server
-    if (wss) {
-        console.log(c.info(`[SHUTDOWN] Closing ${wss.clients.size} WebSocket connections...`));
-        wss.clients.forEach((client) => {
-            client.close(1000, 'Server shutting down');
-        });
-        wss.close(() => {
-            console.log(c.ok('[SHUTDOWN] WebSocket server closed'));
-        });
-    }
 
     // Step 3: Close all active HTTP connections
     const connectionCount = activeConnections.size;
@@ -1754,18 +1265,7 @@ function gracefulShutdown(signal) {
         });
     }
 
-    // Step 5: Clean up PTY sessions
-    if (ptySessionsMap && ptySessionsMap.size > 0) {
-        console.log(c.info(`[SHUTDOWN] Cleaning up ${ptySessionsMap.size} PTY sessions...`));
-        ptySessionsMap.forEach((session) => {
-            if (session.ptyProcess) {
-                session.ptyProcess.kill();
-            }
-        });
-        ptySessionsMap.clear();
-    }
-
-    // Step 6: Close project watcher
+    // Step 5: Close project watcher
     if (projectsWatcher) {
         console.log(c.info('[SHUTDOWN] Closing file watcher...'));
         projectsWatcher.close();

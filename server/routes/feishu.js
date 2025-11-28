@@ -1,112 +1,14 @@
 /**
  * Feishu REST API Routes
  *
- * Provides HTTP endpoints for managing the Feishu WebSocket service.
+ * Provides HTTP endpoints for managing Feishu integration.
  * All endpoints require authentication.
  */
 
 import express from 'express';
-import { FeishuService } from '../feishu-ws.js';
 import { feishuDb } from '../database/db.js';
 
 const router = express.Router();
-
-// Singleton service instance
-let feishuService = null;
-
-/**
- * GET /api/feishu/status
- * Get service status
- */
-router.get('/status', async (req, res) => {
-  try {
-    if (!feishuService) {
-      return res.json({
-        isRunning: false,
-        message: 'Service not initialized'
-      });
-    }
-
-    const status = feishuService.getStatus();
-    res.json({
-      success: true,
-      data: status
-    });
-
-  } catch (error) {
-    console.error('[Feishu API] Error getting status:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-/**
- * POST /api/feishu/start
- * Start the Feishu service
- */
-router.post('/start', async (req, res) => {
-  try {
-    if (feishuService && feishuService.isRunning) {
-      return res.json({
-        success: true,
-        message: 'Service is already running'
-      });
-    }
-
-    // Create service if not exists
-    if (!feishuService) {
-      feishuService = new FeishuService();
-    }
-
-    // Start service
-    await feishuService.start();
-
-    res.json({
-      success: true,
-      message: 'Feishu service started successfully',
-      data: feishuService.getStatus()
-    });
-
-  } catch (error) {
-    console.error('[Feishu API] Error starting service:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-/**
- * POST /api/feishu/stop
- * Stop the Feishu service
- */
-router.post('/stop', async (req, res) => {
-  try {
-    if (!feishuService || !feishuService.isRunning) {
-      return res.json({
-        success: true,
-        message: 'Service is not running'
-      });
-    }
-
-    await feishuService.stop();
-
-    res.json({
-      success: true,
-      message: 'Feishu service stopped successfully'
-    });
-
-  } catch (error) {
-    console.error('[Feishu API] Error stopping service:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
 
 /**
  * GET /api/feishu/sessions

@@ -85,6 +85,10 @@ CREATE TABLE IF NOT EXISTS feishu_message_log (
 
 CREATE INDEX IF NOT EXISTS idx_feishu_message_log_session_id ON feishu_message_log(session_id);
 CREATE INDEX IF NOT EXISTS idx_feishu_message_log_created_at ON feishu_message_log(created_at);
+-- 🆕 为message_id添加唯一约束防止重复处理（跳过NULL值）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_message_id_processed
+ON feishu_message_log(message_id)
+WHERE message_id IS NOT NULL;
 -- Feishu group members table for tracking group chat members
 CREATE TABLE IF NOT EXISTS feishu_group_members (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

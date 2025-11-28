@@ -153,10 +153,9 @@ export class FeishuSessionManager {
     // Session doesn't exist - create new one
     console.log('[SessionManager] Creating new session for:', conversationId);
 
-    // Create project directory path WITHOUT nickname prefix
-    // Session directories use conversationId only (e.g., user-xxx or group-xxx)
-    // Only user project directories (created by other means) use nickname prefix
-    const directoryName = conversationId;
+    // Create project directory using only the Feishu ID without prefix
+    // Extract ID from conversationId (user-xxx or group-xxx -> xxx)
+    const directoryName = feishuId;
     const projectPath = path.join(this.baseDir, directoryName);
     const absolutePath = path.resolve(projectPath);
 

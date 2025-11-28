@@ -464,6 +464,21 @@ const feishuDb = {
     }
   },
 
+  // Check if a message has already been processed (for deduplication)
+  isMessageProcessed: (messageId) => {
+    if (!messageId) return false;
+    try {
+      const row = db.prepare(`
+        SELECT 1 FROM feishu_message_log
+        WHERE message_id = ? AND direction = 'incoming' LIMIT 1
+      `).get(messageId);
+      return !!row;
+    } catch (err) {
+      console.error('[DB] Error checking message:', err.message);
+      return false;
+    }
+  },
+
   // Deactivate a session
   deactivateSession: (sessionId) => {
     try {

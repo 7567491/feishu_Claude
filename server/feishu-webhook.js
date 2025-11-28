@@ -155,13 +155,26 @@ export async function initializeFeishuWebhook() {
 async function handleMessageEvent(data) {
   try {
     const event = data.event || data;
+    const messageId = event.message?.message_id;
 
     console.log('[FeishuWebhook] Received message:');
-    console.log('  Message ID:', event.message?.message_id);
+    console.log('  Message ID:', messageId);
     console.log('  Chat ID:', event.message?.chat_id);
     console.log('  Chat Type:', event.message?.chat_type);
     console.log('  Sender:', event.sender?.sender_id?.open_id);
     console.log('  Sender Type:', event.sender?.sender_type); // user or app
+
+    // 🆕 检查消息是否已被处理过（去重）
+    if (messageId) {
+      const alreadyProcessed = feishuDb.isMessageProcessed(messageId);
+      if (alreadyProcessed) {
+        console.log(`[FeishuWebhook] ✅ Message ${messageId} already processed, skipping duplicate`);
+        return {
+          success: true,
+          message: 'Message already processed'
+        };
+      }
+    }
 
     // 🆕 收集发送者和被提及用户的信息
     await GroupMemberCollector.collectFromMessageEvent(event);

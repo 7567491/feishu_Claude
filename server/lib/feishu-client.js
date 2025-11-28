@@ -1,8 +1,8 @@
 /**
  * Feishu Client
  *
- * Encapsulates Lark SDK for WebSocket connection and message handling.
- * Uses long-lived WebSocket connection (no public domain needed).
+ * Encapsulates Lark SDK for REST API operations.
+ * Provides methods for sending messages, uploading files, and managing documents.
  */
 
 import lark from '@larksuiteoapi/node-sdk';
@@ -13,7 +13,6 @@ export class FeishuClient {
   constructor(config) {
     this.appId = config.appId;
     this.appSecret = config.appSecret;
-    this.loggerLevel = config.loggerLevel || lark.LoggerLevel.error;
 
     // Create Lark Client for API calls
     this.client = new lark.Client({
@@ -22,231 +21,7 @@ export class FeishuClient {
       domain: lark.Domain.Feishu
     });
 
-    // Create WebSocket Client for event listening
-    this.wsClient = new lark.WSClient({
-      appId: this.appId,
-      appSecret: this.appSecret,
-      loggerLevel: this.loggerLevel
-    });
-
-    this.isRunning = false;
-    this.messageHandler = null;
-    this.botInfo = null; // Bot's own info (to identify mentions)
-
     console.log('[FeishuClient] Initialized with App ID:', this.appId);
-  }
-
-  /**
-   * Start the WebSocket connection and listen for messages
-   */
-  async start(messageHandler) {
-    if (this.isRunning) {
-      console.log('[FeishuClient] Already running');
-      return;
-    }
-
-    this.messageHandler = messageHandler;
-
-    // Get bot info
-    await this.getBotInfo();
-
-    // Create EventDispatcher and register message handler
-    const eventDispatcher = new lark.EventDispatcher({
-      loggerLevel: lark.LoggerLevel.debug
-    }).register({
-      'im.message.receive_v1': async (data) => {
-        console.log('[FeishuClient] ✨ EventDispatcher received im.message.receive_v1');
-        console.log('[FeishuClient] Raw event data:', JSON.stringify(data, null, 2).substring(0, 500));
-        await this.handleMessageEvent(data);
-      }
-    });
-
-    // Start WebSocket connection with EventDispatcher
-    try {
-      await this.wsClient.start({ eventDispatcher });
-      this.isRunning = true;
-      console.log('[FeishuClient] WebSocket started successfully');
-    } catch (error) {
-      console.error('[FeishuClient] Failed to start WebSocket:', error.message);
-      throw error;
-    }
-  }
-
-  /**
-   * Stop the WebSocket connection
-   * Note: New SDK version doesn't provide stop() method, connection is managed automatically
-   */
-  async stop() {
-    if (!this.isRunning) {
-      console.log('[FeishuClient] Not running');
-      return;
-    }
-
-    // Mark as not running (SDK will handle reconnection automatically)
-    this.isRunning = false;
-    console.log('[FeishuClient] WebSocket marked as stopped');
-  }
-
-
-  /**
-   * Handle incoming message event
-   */
-  async handleMessageEvent(data) {
-    try {
-      const event = data.event || data;
-
-      console.log('[FeishuClient] Received message:');
-      console.log('  Message ID:', event.message?.message_id);
-      console.log('  Chat ID:', event.message?.chat_id);
-      console.log('  Chat Type:', event.message?.chat_type);
-      console.log('  Sender:', event.sender?.sender_id?.open_id);
-      console.log('  Sender Type:', event.sender?.sender_type); // 新增：打印发送者类型
-      console.log('  Sender ID Type:', event.sender?.sender_id?.id_type); // 新增：打印ID类型
-
-      // 如果是机器人发送的消息，也打印出来（便于调试）
-      if (event.sender?.sender_type === 'app') {
-        console.log('  ⚠️  Message from BOT/APP detected');
-        console.log('  Mentions:', JSON.stringify(event.message?.mentions, null, 2));
-      }
-
-      // Check if this message is for the bot
-      if (!this.isMessageForBot(event)) {
-        console.log('[FeishuClient] Message not for bot, skipping');
-        return;
-      }
-
-      // Extract message content
-      const content = event.message?.content;
-      if (!content) {
-        console.log('[FeishuClient] No content in message');
-        return;
-      }
-
-      let parsedContent;
-      try {
-        parsedContent = JSON.parse(content);
-      } catch (error) {
-        console.error('[FeishuClient] Failed to parse message content:', error.message);
-        return;
-      }
-
-      // Extract text from different message types
-      let userText = '';
-      if (parsedContent.text) {
-        userText = parsedContent.text;
-      } else if (parsedContent.content) {
-        userText = parsedContent.content;
-      }
-
-      // Remove @mentions from text (for group chats)
-      userText = this.cleanMentions(userText);
-
-      if (!userText || !userText.trim()) {
-        console.log('[FeishuClient] Empty message after cleaning');
-        return;
-      }
-
-      console.log('[FeishuClient] User text:', userText);
-
-      // Call message handler
-      if (this.messageHandler) {
-        await this.messageHandler(event, userText.trim());
-      }
-
-    } catch (error) {
-      console.error('[FeishuClient] Error handling message:', error.message);
-      console.error(error.stack);
-    }
-  }
-
-  /**
-   * Check if a message is for the bot
-   * Returns true for:
-   * - Private chats (chat_type === 'p2p')
-   * - Group chats where bot is mentioned (不区分发送者是用户还是机器人)
-   */
-  isMessageForBot(event) {
-    const message = event.message;
-    if (!message) {
-      console.log('[FeishuClient] isMessageForBot: No message object, returning false');
-      return false;
-    }
-
-    // Private chat - always for bot
-    if (message.chat_type === 'p2p') {
-      console.log('[FeishuClient] isMessageForBot: Private chat, returning true');
-      return true;
-    }
-
-    // Group chat - check for mentions
-    if (message.chat_type === 'group') {
-      const mentions = message.mentions;
-      console.log('[FeishuClient] isMessageForBot: Group chat, mentions:', mentions?.length || 0);
-
-      if (!mentions || mentions.length === 0) {
-        console.log('[FeishuClient] isMessageForBot: No mentions, returning false');
-        return false;
-      }
-
-      // Check if bot is mentioned
-      // If we have bot's open_id, check for exact match
-      // Otherwise, accept any @ mention as potentially for us
-      if (this.botInfo?.open_id) {
-        console.log('[FeishuClient] isMessageForBot: Bot open_id exists, checking mentions...');
-        for (const mention of mentions) {
-          if (mention.id?.open_id === this.botInfo.open_id) {
-            console.log('[FeishuClient] isMessageForBot: Bot is mentioned, returning true');
-            return true;
-          }
-          if (mention.key === '@_all') {
-            console.log('[FeishuClient] isMessageForBot: @_all detected, returning true');
-            return true;
-          }
-        }
-        console.log('[FeishuClient] isMessageForBot: Bot not mentioned, returning false');
-        return false;
-      } else {
-        // No bot info - accept any mention (包括来自机器人的@消息)
-        console.log('[FeishuClient] isMessageForBot: No bot open_id, accepting any mention, returning true');
-        return true;
-      }
-    }
-
-    // Unknown chat type
-    console.log('[FeishuClient] isMessageForBot: Unknown chat type:', message.chat_type);
-    return false;
-  }
-
-  /**
-   * Clean @mentions from text
-   */
-  cleanMentions(text) {
-    if (!text) return '';
-
-    // Remove @user_name format (e.g., "@Bot ")
-    let cleaned = text.replace(/@[^\s]+\s*/g, '');
-
-    // Remove at-mention markers used by Feishu
-    cleaned = cleaned.replace(/@_user_\d+/g, '');
-    cleaned = cleaned.replace(/@_all/g, '');
-
-    return cleaned.trim();
-  }
-
-  /**
-   * Get bot's own information
-   */
-  async getBotInfo() {
-    try {
-      // For mentions to work properly, we would need bot info
-      // But it's not critical for basic functionality
-      // Set a placeholder for now
-      this.botInfo = { open_id: null };
-      console.log('[FeishuClient] Bot info: mentions will match any @');
-    } catch (error) {
-      console.error('[FeishuClient] Failed to get bot info:', error.message);
-      this.botInfo = { open_id: null };
-    }
   }
 
   /**
@@ -331,15 +106,6 @@ export class FeishuClient {
     }
   }
 
-  /**
-   * Get connection status
-   */
-  getStatus() {
-    return {
-      isRunning: this.isRunning,
-      botInfo: this.botInfo
-    };
-  }
 
   /**
    * Upload a file to Feishu
